@@ -1,0 +1,230 @@
+
+---
+
+## 📄 ARCHIVO 2: `analisis_bayesiano.R` (CÓDIGO PRINCIPAL)
+
+```r
+# =============================================================================
+# ANÁLISIS BAYESIANO DE FACTORES DE RIESGO DE TME EN TRABAJADORES PORTUARIOS
+# Versión pública para GitHub y Zenodo
+# =============================================================================
+# Este script realiza el análisis completo del estudio.
+# Los datos originales son confidenciales y no se incluyen.
+# Para pruebas, usar datos_sinteticos.csv
+# =============================================================================
+
+# 1. CONFIGURACIÓN INICIAL ----------------------------------------------------
+
+# Detectar directorio del proyecto (funciona en RStudio)
+if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+  proyecto_dir <- dirname(dirname(rstudioapi::getActiveDocumentContext()$path))
+} else {
+  proyecto_dir <- getwd()
+}
+
+# Establecer directorio de trabajo
+setwd(proyecto_dir)
+
+# Crear carpetas necesarias
+dir.create("data", showWarnings = FALSE)
+dir.create("output", showWarnings = FALSE)
+dir.create("figures", showWarnings = FALSE)
+
+# Semilla para reproducibilidad
+set.seed(123)
+
+cat("✅ Directorio del proyecto:", getwd(), "\n")
+
+# 2. CARGAR LIBRERÍAS ---------------------------------------------------------
+
+library(tidyverse)
+library(brms)
+library(loo)
+library(bayesplot)
+library(posterior)
+
+cat("✅ Librerías cargadas\n")
+
+# 3. CARGAR DATOS -------------------------------------------------------------
+
+# Intentar cargar datos reales (si existen en la carpeta data/)
+archivo_datos <- "data/datos_reales.csv"
+
+if (file.exists(archivo_datos)) {
+  datos <- read.csv(archivo_datos, encoding = "UTF-8")
+  cat("✅ Datos reales cargados:", nrow(datos), "observaciones\n")
+} else {
+  # Si no hay datos reales, usar datos sintéticos
+  archivo_sintetico <- "data/datos_sinteticos.csv"
+  if (file.exists(archivo_sintetico)) {
+    datos <- read.csv(archivo_sintetico, encoding = "UTF-8")
+    cat("⚠️ Datos sintéticos cargados:", nrow(datos), "observaciones\n")
+  } else {
+    stop("❌ No se encontraron datos. Coloca tus datos en data/datos_reales.csv")
+  }
+}
+
+# 4. PREPARAR DATOS -----------------------------------------------------------
+
+datos_modelo <- datos %>%
+  select(tme_global_12m, edad, genero, categoria_imc, 
+         area_trabajo, antiguedad_anios, puerto) %>%
+  drop_na() %>%
+  mutate(across(c(genero, categoria_imc, area_trabajo, puerto), factor))
+
+cat("✅ Datos preparados:", nrow(datos_modelo), "observaciones\n")
+
+# 5. DEFINIR FÓRMULA DEL MODELO -----------------------------------------------
+
+formula_base <- bf(tme_global_12m ~ edad + genero + categoria_imc + 
+                     area_trabajo + antiguedad_anios + (1 | puerto))
+
+# 6. DEFINIR PRIORS -----------------------------------------------------------
+
+priors_horseshoe <- list(
+  hs_original = c(prior(horseshoe(1), class = "b"), prior(cauchy(0, 2.5), class = "sd")),
+  hs_fuerte = c(prior(horseshoe(0.5), class = "b"), prior(cauchy(0, 1.5), class = "sd")),
+  hs_debil = c(prior(horseshoe(2), class = "b"), prior(cauchy(0, 5), class = "sd")),
+  hs_student = c(prior(horseshoe(1), class = "b"), prior(student_t(3, 0, 2.5), class = "sd")),
+  hs_exp = c(prior(horseshoe(1), class = "b"), prior(exponential(1), class = "sd"))
+)
+
+# 7. FUNCIÓN PARA AJUSTAR MODELOS ---------------------------------------------
+
+ajustar_modelo <- function(prior, nombre, datos) {
+  cat("\n  🔄 Ajustando:", nombre, "\n")
+  
+  fit <- brm(formula_base,
+             data = datos,
+             family = bernoulli(),
+             prior = prior,
+             chains = 4,
+             cores = 4,
+             iter = 4000,
+             warmup = 2000,
+             control = list(adapt_delta = 0.99, max_treedepth = 15),
+             seed = 123,
+             refresh = 0)
+  
+  loo_result <- tryCatch(loo(fit), error = function(e) NULL)
+  
+  return(list(fit = fit, loo = loo_result, nombre = nombre))
+}
+
+# 8. EJECUTAR ANÁLISIS DE SENSIBILIDAD ----------------------------------------
+
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("EJECUTANDO ANÁLISIS DE SENSIBILIDAD\n")
+cat(paste(rep("=", 80), collapse = ""), "\n")
+
+modelos <- list()
+resultados <- data.frame()
+
+for (i in seq_along(priors_horseshoe)) {
+  nombre_prior <- names(priors_horseshoe)[i]
+  modelo <- ajustar_modelo(priors_horseshoe[[i]], nombre_prior, datos_modelo)
+  modelos[[nombre_prior]] <- modelo
+  
+  if (!is.null(modelo$loo)) {
+    resultados <- rbind(resultados, data.frame(
+      Prior = nombre_prior,
+      elpd_loo = modelo$loo$estimates["elpd_loo", "Estimate"],
+      looic = modelo$loo$estimates["looic", "Estimate"],
+      p_loo = modelo$loo$estimates["p_loo", "Estimate"]
+    ))
+  }
+}
+
+# 9. SELECCIONAR MEJOR MODELO ------------------------------------------------
+
+mejor_prior <- resultados$Prior[which.max(resultados$elpd_loo)]
+modelo_final <- modelos[[mejor_prior]]$fit
+
+cat("\n🏆 Mejor modelo:", mejor_prior, "\n")
+
+# 10. RESULTADOS DEL MODELO --------------------------------------------------
+
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("RESULTADOS DEL MODELO FINAL\n")
+cat(paste(rep("=", 80), collapse = ""), "\n")
+
+# Coeficientes
+coef_summary <- summary(modelo_final)$fixed
+print(coef_summary)
+
+# Odds Ratios
+cat("\n📊 Odds Ratios:\n")
+odds_ratios <- exp(coef_summary[-1, c("Estimate", "l-95% CI", "u-95% CI")])
+print(odds_ratios)
+
+# 11. DIAGNÓSTICOS DE CONVERGENCIA -------------------------------------------
+
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("DIAGNÓSTICOS DE CONVERGENCIA\n")
+cat(paste(rep("=", 80), collapse = ""), "\n")
+
+# Extraer muestras
+draws <- as_draws_array(modelo_final)
+
+# R-hat y ESS
+rhat_vals <- rhat(modelo_final)
+ess_vals <- ess_bulk(modelo_final)
+
+cat("✅ R-hat máximo:", round(max(rhat_vals), 3), "\n")
+cat("✅ ESS mínimo:", round(min(ess_vals), 0), "\n")
+
+if (all(rhat_vals < 1.01)) {
+  cat("✅ Convergencia aceptable (todos R-hat < 1.01)\n")
+} else {
+  cat("⚠️ Algunos parámetros tienen R-hat > 1.01\n")
+}
+
+# 12. GENERAR GRÁFICOS -------------------------------------------------------
+
+# Rank plots
+parametros_rank <- c("b_Intercept", "b_edad", "b_generoMasculino", "sd_puerto__Intercept")
+parametros_existentes <- intersect(parametros_rank, variables(draws))
+
+if (length(parametros_existentes) > 0) {
+  p_rank_hist <- mcmc_rank_hist(draws, pars = parametros_existentes) +
+    ggtitle("Rank Histogram Plots") +
+    theme_minimal()
+  
+  ggsave("figures/rank_histogram_plots.png", p_rank_hist, 
+         width = 12, height = 8, dpi = 300)
+  cat("✅ Gráfico guardado: figures/rank_histogram_plots.png\n")
+}
+
+# 13. GUARDAR RESULTADOS -----------------------------------------------------
+
+save(modelos, resultados, datos_modelo, 
+     file = "output/resultados_bayesianos.RData")
+
+# Tabla de resultados en CSV
+write.csv(resultados, "output/tabla_sensibilidad.csv", row.names = FALSE)
+
+# Resumen de coeficientes
+coef_df <- as.data.frame(coef_summary)
+coef_df$parametro <- rownames(coef_summary)
+write.csv(coef_df, "output/coeficientes.csv", row.names = FALSE)
+
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("✅ ANÁLISIS COMPLETADO\n")
+cat(paste(rep("=", 80), collapse = ""), "\n")
+
+cat("\n📁 ARCHIVOS GENERADOS:\n")
+cat("   - output/resultados_bayesianos.RData\n")
+cat("   - output/tabla_sensibilidad.csv\n")
+cat("   - output/coeficientes.csv\n")
+cat("   - figures/rank_histogram_plots.png\n")
+
+cat("\n🔧 Para reproducir este análisis:\n")
+cat("   1. Instala los paquetes requeridos\n")
+cat("   2. Coloca tus datos en data/datos_reales.csv\n")
+cat("   3. Ejecuta este script\n")
+
+cat("\n📌 Para obtener el DOI de Zenodo:\n")
+cat("   1. Sube este repositorio a GitHub\n")
+cat("   2. Conecta Zenodo a tu cuenta de GitHub\n")
+cat("   3. Crea un nuevo release en GitHub\n")
+cat("   4. Zenodo generará automáticamente un DOI\n")

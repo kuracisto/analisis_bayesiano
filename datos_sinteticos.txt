@@ -1,0 +1,6 @@
+id,edad,genero,categoria_imc,area_trabajo,antiguedad_anios,puerto,num_regiones_12m,tme_global_12m
+1,35,Masculino,Sobrepeso,Operaciones,5,Moín,3,1
+2,42,Femenino,Normal,Mantenimiento,12,Puntarenas,2,0
+3,28,Masculino,Obesidad,Operaciones,2,Moín,4,1
+4,50,Masculino,Sobrepeso,Ingenieria,20,Puntarenas,1,0
+5,31,Femenino,Normal,Otros,4,Moín,2,0
